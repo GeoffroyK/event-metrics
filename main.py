@@ -1,20 +1,35 @@
-from typing import List
+from typing import Dict
 
 import tonic
+from tonic.transforms import *
 
 from utils.collect import collect_flux_statistics
 from utils.plot import plot_flux_statistics
 
 
-def analyse_datasets(datasets: List, n_samples: int = 1000, time_window_ms: float = 33.3):
-    train_stats = collect_flux_statistics(datasets[0], n_samples, "train", time_window_ms)
-    test_stats = collect_flux_statistics(datasets[1], n_samples, "test", time_window_ms)
-
-    plot_flux_statistics(train_stats, test_stats, "NMNIST")
+def analyse_datasets(datasets: Dict[str, tonic.Dataset], n_samples: int, representation: Callable):
+    stats_list = [
+        (name, collect_flux_statistics(dataset, n_samples, name, representation)) for name, dataset in datasets.items()
+    ]
+    plot_flux_statistics(stats_list, 'NMNIST')
 
 
 if __name__ == '__main__':
-    mnist_train_dataset = tonic.datasets.NMNIST(save_to='./data', train=True)
-    mnist_test_dataset = tonic.datasets.NMNIST(save_to='./data', train=False)
+    augmentations = {
+        "baseline": None,
+        "flip_lr": Compose([RandomFlipLR(sensor_size=tonic.datasets.NMNIST.sensor_size, p=0.5)]),
+        "time_jitter": Compose([TimeJitter(std=1.0, clip_negative=True)]),
+        "spatial_jitter": Compose([
+            SpatialJitter(sensor_size=tonic.datasets.NMNIST.sensor_size, var_x=2, var_y=2, clip_outliers=True)
+        ]),
+        "event_drop": Compose([DropEvent(p=1 / 3)]),
+        "uniform_noise": Compose([UniformNoise(sensor_size=tonic.datasets.NMNIST.sensor_size, n=1000)]),
+    }
 
-    analyse_datasets([mnist_train_dataset, mnist_test_dataset], n_samples=1000, time_window_ms=33.3)
+    representation = ToFrame(sensor_size=tonic.datasets.NMNIST.sensor_size, time_window=33000)
+
+    datasets = {
+        name: tonic.datasets.NMNIST(save_to='./data', train=True, transform=augmentation) for name, augmentation in augmentations.items()
+    }
+
+    analyse_datasets(datasets, n_samples=1000, representation=representation)

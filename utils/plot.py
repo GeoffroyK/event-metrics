@@ -1,119 +1,153 @@
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import numpy as np
-from matplotlib import pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
-def plot_3d_spatial_histogram(train_stats: Dict, test_stats: Dict, dataset_name: str):
+def plot_3d_spatial_histogram(stats_list: List[Tuple[str, Dict]], dataset_name: str):
     """Plot 3D surface showing event distribution over spatial coordinates."""
 
-    if 'spatial_histograms' not in train_stats or 'spatial_histograms' not in test_stats:
+    # Filter stats that have spatial histogram data
+    valid_stats = [(name, stats) for name, stats in stats_list
+                   if 'spatial_histograms' in stats]
+
+    if not valid_stats:
         print("Spatial histogram data not available. Make sure to collect spatial statistics.")
         return
 
-    fig = plt.figure(figsize=(16, 6))
+    n_datasets = len(valid_stats)
 
-    # Train data 3D surface
-    ax1 = fig.add_subplot(121, projection='3d')
-    train_hist = np.mean(train_stats['spatial_histograms'], axis=0)  # Average across samples
+    # Calculate grid dimensions for better layout
+    n_cols = min(2, n_datasets)  # Max 3 columns
+    n_rows = (n_datasets + n_cols - 1) // n_cols  # Ceiling division
 
-    height, width = train_hist.shape
-    x = np.arange(width)
-    y = np.arange(height)
-    X, Y = np.meshgrid(x, y)
+    fig = make_subplots(
+        rows=n_rows, cols=n_cols,
+        subplot_titles=[f'{dataset_name} {name} - Average Event Density'
+                        for name, _ in valid_stats],
+        specs=[[{'type': 'surface'}] * n_cols for _ in range(n_rows)]
+    )
 
-    surf1 = ax1.plot_surface(X, Y, train_hist, cmap='viridis', alpha=0.8)
-    ax1.set_title(f'{dataset_name} Train - Average Event Density')
-    ax1.set_xlabel('X coordinate')
-    ax1.set_ylabel('Y coordinate')
-    ax1.set_zlabel('Average Event Count')
+    # Calculate global z_max for consistent scaling
+    z_max = max(np.mean(stats['spatial_histograms'], axis=0).max()
+                for _, stats in valid_stats)
 
-    # Test data 3D surface
-    ax2 = fig.add_subplot(122, projection='3d')
-    test_hist = np.mean(test_stats['spatial_histograms'], axis=0)
+    for idx, (name, stats) in enumerate(valid_stats):
+        row = idx // n_cols + 1
+        col = idx % n_cols + 1
 
-    # Use same z-scale for fair comparison
-    z_max = max(train_hist.max(), test_hist.max())
-    ax1.set_zlim(0, z_max)
-    ax2.set_zlim(0, z_max)
+        hist = np.mean(stats['spatial_histograms'], axis=0)
+        height, width = hist.shape
+        x = np.arange(width)
+        y = np.arange(height)
+        X, Y = np.meshgrid(x, y)
 
-    surf2 = ax2.plot_surface(X, Y, test_hist, cmap='viridis', alpha=0.8)
-    ax2.set_title(f'{dataset_name} Test - Average Event Density')
-    ax2.set_xlabel('X coordinate')
-    ax2.set_ylabel('Y coordinate')
-    ax2.set_zlabel('Average Event Count')
+        fig.add_trace(
+            go.Surface(x=X, y=Y, z=hist, colorscale='Viridis',
+                       showscale=(idx == n_datasets - 1)),
+            row=row, col=col
+        )
 
-    plt.tight_layout()
-    plt.show()
+    fig.update_scenes(
+        xaxis_title='X coordinate',
+        yaxis_title='Y coordinate',
+        zaxis_title='Average Event Count',
+        zaxis_range=[0, z_max]
+    )
+
+    fig.update_layout(height=600 * n_rows, width=800 * n_cols, showlegend=False)
+    fig.show()
 
 
-def plot_flux_statistics(train_stats: Dict, test_stats: Dict, dataset_name: str):
-    """Plot comprehensive flux statistics comparison."""
+def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
+    """Plot comprehensive flux statistics comparison.
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle(f'{dataset_name} Event Flux Statistics', fontsize=16, fontweight='bold')
+    Args:
+        stats_list: List of tuples (name, stats_dict) for each dataset split
+        dataset_name: Name of the overall dataset
+    """
 
-    # 1. Event Density Distribution
-    ax1 = axes[0, 0]
-    ax1.hist(train_stats['event_densities'], bins=50, alpha=0.7, label='Train', density=True)
-    ax1.hist(test_stats['event_densities'], bins=50, alpha=0.7, label='Test', density=True)
-    ax1.set_xlabel('Event Density (events/second)')
-    ax1.set_ylabel('Density')
-    ax1.set_title('Event Density Distribution')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Event Density Distribution', 'Event Count Distribution',
+                        'Polarity Ratio Distribution', 'Non-zero Pixel Distribution')
+    )
 
-    # 2. Number of Events Distribution
-    ax2 = axes[0, 1]
-    ax2.hist(train_stats['event_counts'], bins=50, alpha=0.7, label='Train', density=True)
-    ax2.hist(test_stats['event_counts'], bins=50, alpha=0.7, label='Test', density=True)
-    ax2.set_xlabel('Number of Events per Window')
-    ax2.set_ylabel('Density')
-    ax2.set_title('Event Count Distribution')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
+    colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
 
-    # 3. Polarity Ratio Distribution
-    ax3 = axes[1, 0]
-    # Filter out infinite values for plotting
-    train_pol_filtered = train_stats['polarity_ratios'][np.isfinite(train_stats['polarity_ratios'])]
-    test_pol_filtered = test_stats['polarity_ratios'][np.isfinite(test_stats['polarity_ratios'])]
+    for idx, (split_name, stats) in enumerate(stats_list):
+        color = colors[idx % len(colors)]
+        show_legend = True  # Only show legend for first two datasets to avoid clutter
 
-    ax3.hist(train_pol_filtered, bins=15, alpha=0.7, label='Train', density=True)
-    ax3.hist(test_pol_filtered, bins=15, alpha=0.7, label='Test', density=True)
-    ax3.set_xlabel('Polarity Ratio (Positive/Negative)')
-    ax3.set_ylabel('Density')
-    ax3.set_title('Polarity Ratio Distribution')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+        # 1. Event Density Distribution
+        fig.add_trace(
+            go.Histogram(x=stats['event_densities'], name=split_name, opacity=0.8,
+                         histnorm='probability density', nbinsx=100,
+                         marker_color=color, showlegend=show_legend,
+                         legendgroup=split_name),
+            row=1, col=1
+        )
 
-    # 4. Non-zero Pixel Percentage Distribution
-    ax4 = axes[1, 1]
-    ax4.hist(train_stats['nonzero_pixel_percentages'], bins=30, alpha=0.7, label='Train', density=True)
-    ax4.hist(test_stats['nonzero_pixel_percentages'], bins=30, alpha=0.7, label='Test', density=True)
-    ax4.set_xlabel('Non-zero Pixel Percentage')
-    ax4.set_ylabel('Density')
-    ax4.set_title('Non-zero Pixel Distribution')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
+        # 2. Number of Events Distribution
+        fig.add_trace(
+            go.Histogram(x=stats['event_counts'], name=split_name, opacity=0.8,
+                         histnorm='probability density', nbinsx=100,
+                         marker_color=color, showlegend=False,
+                         legendgroup=split_name),
+            row=1, col=2
+        )
 
-    plt.tight_layout()
-    plt.show()
+        # 3. Polarity Ratio Distribution
+        pol_filtered = stats['polarity_ratios'][np.isfinite(stats['polarity_ratios'])]
+        fig.add_trace(
+            go.Histogram(x=pol_filtered, name=split_name, opacity=0.8,
+                         histnorm='probability density', nbinsx=100,
+                         marker_color=color, showlegend=False,
+                         legendgroup=split_name),
+            row=2, col=1
+        )
 
-    plot_3d_spatial_histogram(train_stats, test_stats, dataset_name)
+        # 4. Non-zero Pixel Percentage Distribution
+        fig.add_trace(
+            go.Histogram(x=stats['nonzero_pixel_percentages'], name=split_name, opacity=0.8,
+                         histnorm='probability density', nbinsx=100,
+                         marker_color=color, showlegend=False,
+                         legendgroup=split_name),
+            row=2, col=2
+        )
+
+    # Rest of the function remains the same
+    fig.update_xaxes(title_text='Event Density (events/second)', row=1, col=1)
+    fig.update_xaxes(title_text='Number of Events per Window', row=1, col=2)
+    fig.update_xaxes(title_text='Polarity Ratio (Positive/Negative)', row=2, col=1)
+    fig.update_xaxes(title_text='Non-zero Pixel Percentage', row=2, col=2)
+
+    fig.update_yaxes(title_text='Density', row=1, col=1)
+    fig.update_yaxes(title_text='Density', row=1, col=2)
+    fig.update_yaxes(title_text='Density', row=2, col=1)
+    fig.update_yaxes(title_text='Density', row=2, col=2)
+
+    fig.update_layout(
+        title_text=f'{dataset_name} Event Flux Statistics',
+        height=1200,
+        width=1500,
+        barmode='overlay',
+        showlegend=True
+    )
+
+    fig.show()
+
+    plot_3d_spatial_histogram(stats_list, dataset_name)
 
     # Print summary statistics
     print(f"\n{dataset_name} Flux Statistics Summary:")
     print("-" * 50)
-    print(
-        f"Event Density (events/s) - Train: {np.mean(train_stats['event_densities']):.2f} ± {np.std(train_stats['event_densities']):.2f}")
-    print(
-        f"Event Density (events/s) - Test:  {np.mean(test_stats['event_densities']):.2f} ± {np.std(test_stats['event_densities']):.2f}")
-    print(
-        f"Avg Events/Window - Train: {np.mean(train_stats['event_counts']):.2f} ± {np.std(train_stats['event_counts']):.2f}")
-    print(
-        f"Avg Events/Window - Test:  {np.mean(test_stats['event_counts']):.2f} ± {np.std(test_stats['event_counts']):.2f}")
-    print(
-        f"Avg Non-zero Pixels (%) - Train: {np.mean(train_stats['nonzero_pixel_percentages']):.2f} ± {np.std(train_stats['nonzero_pixel_percentages']):.2f}")
-    print(
-        f"Avg Non-zero Pixels (%) - Test:  {np.mean(test_stats['nonzero_pixel_percentages']):.2f} ± {np.std(test_stats['nonzero_pixel_percentages']):.2f}")
+    for split_name, stats in stats_list:
+        print(f"\n{split_name}:")
+        print(
+            f"  Event Density (events/s): {np.mean(stats['event_densities']):.2f} ± {np.std(stats['event_densities']):.2f}")
+        print(f"  Avg Events/Window: {np.mean(stats['event_counts']):.2f} ± {np.std(stats['event_counts']):.2f}")
+        print(
+            f"  Avg Non-zero Pixels (%): {np.mean(stats['nonzero_pixel_percentages']):.2f} ± {np.std(stats['nonzero_pixel_percentages']):.2f}")
+
