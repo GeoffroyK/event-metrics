@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from utils.collect import calculate_histogram_kl_divergences
+
 
 def plot_3d_spatial_histogram(stats_list: List[Tuple[str, Dict]], dataset_name: str):
     """Plot 3D surface showing event distribution over spatial coordinates."""
@@ -151,3 +153,84 @@ def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
         print(
             f"  Avg Non-zero Pixels (%): {np.mean(stats['nonzero_pixel_percentages']):.2f} ± {np.std(stats['nonzero_pixel_percentages']):.2f}")
 
+    # Calculate and display KL divergences
+    print("\n" + "=" * 70)
+    print("KL DIVERGENCE ANALYSIS (comparing to baseline)")
+    print("=" * 70)
+
+    kl_results = calculate_histogram_kl_divergences(stats_list, baseline_name="baseline")
+
+    for name, kl_metrics in kl_results.items():
+        print(f"\n{name}:")
+        if kl_metrics.get('spatial_histogram_kl', float('nan')) == 0.0:
+            print("  [BASELINE - all KL divergences = 0.0]")
+        else:
+            if 'spatial_histogram_kl' in kl_metrics:
+                print(f"  Spatial Histogram KL:     {kl_metrics['spatial_histogram_kl']:.6f} ± {kl_metrics.get('spatial_histogram_kl_std', 0):.6f}")
+            if 'event_density_kl' in kl_metrics:
+                print(f"  Event Density KL:         {kl_metrics['event_density_kl']:.6f}")
+            if 'event_count_kl' in kl_metrics:
+                print(f"  Event Count KL:           {kl_metrics['event_count_kl']:.6f}")
+            if 'polarity_ratio_kl' in kl_metrics:
+                print(f"  Polarity Ratio KL:        {kl_metrics['polarity_ratio_kl']:.6f}")
+            if 'nonzero_pixel_kl' in kl_metrics:
+                print(f"  Non-zero Pixel KL:        {kl_metrics['nonzero_pixel_kl']:.6f}")
+
+    # Create bar plot for KL divergences
+    plot_kl_divergences(kl_results, dataset_name)
+
+
+def plot_kl_divergences(kl_results: Dict, dataset_name: str):
+    """Plot bar chart comparing KL divergences across different augmentations.
+
+    Args:
+        kl_results: Dictionary with KL divergence results for each dataset
+        dataset_name: Name of the dataset
+    """
+    # Prepare data for plotting
+    dataset_names = []
+    metrics = ['spatial_histogram_kl', 'event_density_kl', 'event_count_kl',
+               'polarity_ratio_kl', 'nonzero_pixel_kl']
+    metric_labels = ['Spatial Histogram', 'Event Density', 'Event Count',
+                     'Polarity Ratio', 'Non-zero Pixels']
+
+    data_by_metric = {metric: [] for metric in metrics}
+
+    for name, kl_metrics in kl_results.items():
+        if name != "baseline":  # Skip baseline since it's always 0
+            dataset_names.append(name)
+            for metric in metrics:
+                value = kl_metrics.get(metric, float('nan'))
+                data_by_metric[metric].append(value)
+
+    # Create grouped bar chart
+    fig = go.Figure()
+
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+
+    for idx, (metric, label) in enumerate(zip(metrics, metric_labels)):
+        fig.add_trace(go.Bar(
+            name=label,
+            x=dataset_names,
+            y=data_by_metric[metric],
+            marker_color=colors[idx]
+        ))
+
+    fig.update_layout(
+        title=f'{dataset_name} - KL Divergence from Baseline',
+        xaxis_title='Augmentation Method',
+        yaxis_title='KL Divergence',
+        barmode='group',
+        height=600,
+        width=1200,
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02
+        )
+    )
+
+    fig.show()
