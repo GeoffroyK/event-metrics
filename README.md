@@ -13,3 +13,9 @@ A Python toolkit for analyzing and visualizing event-based camera data statistic
 
 ```bash
 pip install -r requirements.txt
+```
+
+## Visualisation 
+Check this library for data viz
+https://streamlit.io/
+
