@@ -1,142 +1,115 @@
 import numpy as np
 from typing import Dict, Callable, List, Tuple
 from scipy.stats import entropy
+from tqdm import tqdm
+from numba import jit
+
+
+@jit(nopython=True)
+def _build_spatial_histogram_fast(x_coords, y_coords, height, width):
+    """Fast spatial histogram using numba."""
+    hist = np.zeros((height, width), dtype=np.int32)
+    for i in range(len(x_coords)):
+        x, y = x_coords[i], y_coords[i]
+        if 0 <= x < width and 0 <= y < height:
+            hist[y, x] += 1
+    return hist
 
 
 def calculate_kl_divergence(p_hist: np.ndarray, q_hist: np.ndarray, epsilon: float = 1e-10) -> float:
-    """Calculate KL divergence between two probability distributions.
+    """Calculate KL divergence between two probability distributions."""
+    # Flatten and normalize in one go
+    p_flat = p_hist.ravel()
+    q_flat = q_hist.ravel()
 
-    Args:
-        p_hist: Reference histogram (e.g., baseline)
-        q_hist: Comparison histogram (e.g., augmented)
-        epsilon: Small value to avoid log(0)
+    p_sum = p_flat.sum()
+    q_sum = q_flat.sum()
 
-    Returns:
-        KL divergence value
-    """
-    # Flatten histograms
-    p_flat = p_hist.flatten()
-    q_flat = q_hist.flatten()
+    # Avoid division if sum is zero
+    if p_sum == 0 or q_sum == 0:
+        return float('nan')
 
-    # Normalize to probability distributions
-    p_prob = p_flat / (np.sum(p_flat) + epsilon)
-    q_prob = q_flat / (np.sum(q_flat) + epsilon)
+    # Normalize and add epsilon
+    p_prob = (p_flat / p_sum) + epsilon
+    q_prob = (q_flat / q_sum) + epsilon
 
-    # Add epsilon to avoid log(0)
-    p_prob = p_prob + epsilon
-    q_prob = q_prob + epsilon
+    # Re-normalize
+    p_prob /= p_prob.sum()
+    q_prob /= q_prob.sum()
 
-    # Re-normalize after adding epsilon
-    p_prob = p_prob / np.sum(p_prob)
-    q_prob = q_prob / np.sum(q_prob)
-
-    # Calculate KL divergence
-    kl_div = entropy(p_prob, q_prob)
-
-    return kl_div
+    return entropy(p_prob, q_prob)
 
 
 def calculate_histogram_kl_divergences(stats_list: List[Tuple[str, Dict]], baseline_name: str = "baseline") -> Dict:
-    """Calculate KL divergence for each histogram metric against baseline.
-
-    Args:
-        stats_list: List of (name, stats_dict) tuples
-        baseline_name: Name of the baseline dataset to compare against
-
-    Returns:
-        Dictionary with KL divergence results for each metric
-    """
+    """Calculate KL divergence for each histogram metric against baseline."""
     # Find baseline stats
-    baseline_stats = None
-    for name, stats in stats_list:
-        if name == baseline_name:
-            baseline_stats = stats
-            break
+    baseline_stats = next((stats for name, stats in stats_list if name == baseline_name), None)
 
     if baseline_stats is None:
         print(f"Warning: Baseline '{baseline_name}' not found. Using first dataset as baseline.")
         baseline_stats = stats_list[0][1]
+        baseline_name = stats_list[0][0]
 
     kl_results = {}
 
+    # Pre-compute baseline histograms to avoid repeated computation
+    baseline_histograms = {}
+
+    for metric in ['event_densities', 'event_counts', 'polarity_ratios', 'nonzero_pixel_percentages', 'event_durations']:
+        if metric in baseline_stats:
+            data = baseline_stats[metric]
+            if metric == 'polarity_ratios':
+                data = data[np.isfinite(data)]
+            if len(data) > 0:
+                bins = np.histogram_bin_edges(data, bins=100)
+                hist, _ = np.histogram(data, bins=bins)
+                baseline_histograms[metric] = (hist, bins)
+
     for name, stats in stats_list:
         if name == baseline_name:
-            # Baseline has 0 divergence from itself
             kl_results[name] = {
                 'spatial_histogram_kl': 0.0,
                 'event_density_kl': 0.0,
                 'event_count_kl': 0.0,
                 'polarity_ratio_kl': 0.0,
-                'nonzero_pixel_kl': 0.0
+                'nonzero_pixel_kl': 0.0,
+                'event_duration_kl': 0.0
             }
             continue
 
         result = {}
 
-        # 1. Spatial histogram KL divergence (average across samples)
+        # 1. Spatial histogram KL divergence
         if 'spatial_histograms' in stats and 'spatial_histograms' in baseline_stats:
-            spatial_kl_values = []
             n_samples = min(len(stats['spatial_histograms']), len(baseline_stats['spatial_histograms']))
 
-            for i in range(n_samples):
-                kl = calculate_kl_divergence(baseline_stats['spatial_histograms'][i],
-                                            stats['spatial_histograms'][i])
-                if np.isfinite(kl):
-                    spatial_kl_values.append(kl)
+            # Vectorized KL computation
+            kl_values = np.array([
+                calculate_kl_divergence(baseline_stats['spatial_histograms'][i], stats['spatial_histograms'][i])
+                for i in range(n_samples)
+            ])
 
-            result['spatial_histogram_kl'] = np.mean(spatial_kl_values) if spatial_kl_values else float('nan')
-            result['spatial_histogram_kl_std'] = np.std(spatial_kl_values) if spatial_kl_values else float('nan')
+            kl_values = kl_values[np.isfinite(kl_values)]
+            result['spatial_histogram_kl'] = np.mean(kl_values) if len(kl_values) > 0 else float('nan')
+            result['spatial_histogram_kl_std'] = np.std(kl_values) if len(kl_values) > 0 else float('nan')
 
-        # 2. Event density distribution KL divergence
-        if 'event_densities' in stats and 'event_densities' in baseline_stats:
-            # Create histograms from the data
-            bins = np.linspace(
-                min(baseline_stats['event_densities'].min(), stats['event_densities'].min()),
-                max(baseline_stats['event_densities'].max(), stats['event_densities'].max()),
-                100
-            )
-            baseline_hist, _ = np.histogram(baseline_stats['event_densities'], bins=bins)
-            current_hist, _ = np.histogram(stats['event_densities'], bins=bins)
-            result['event_density_kl'] = calculate_kl_divergence(baseline_hist, current_hist)
+        # 2-6. Use pre-computed baseline histograms
+        for metric, key in [
+            ('event_densities', 'event_density_kl'),
+            ('event_counts', 'event_count_kl'),
+            ('polarity_ratios', 'polarity_ratio_kl'),
+            ('nonzero_pixel_percentages', 'nonzero_pixel_kl'),
+            ('event_durations', 'event_duration_kl')
+        ]:
+            if metric in stats and metric in baseline_histograms:
+                data = stats[metric]
+                if metric == 'polarity_ratios':
+                    data = data[np.isfinite(data)]
 
-        # 3. Event count distribution KL divergence
-        if 'event_counts' in stats and 'event_counts' in baseline_stats:
-            bins = np.linspace(
-                min(baseline_stats['event_counts'].min(), stats['event_counts'].min()),
-                max(baseline_stats['event_counts'].max(), stats['event_counts'].max()),
-                100
-            )
-            baseline_hist, _ = np.histogram(baseline_stats['event_counts'], bins=bins)
-            current_hist, _ = np.histogram(stats['event_counts'], bins=bins)
-            result['event_count_kl'] = calculate_kl_divergence(baseline_hist, current_hist)
-
-        # 4. Polarity ratio distribution KL divergence
-        if 'polarity_ratios' in stats and 'polarity_ratios' in baseline_stats:
-            baseline_pol = baseline_stats['polarity_ratios'][np.isfinite(baseline_stats['polarity_ratios'])]
-            current_pol = stats['polarity_ratios'][np.isfinite(stats['polarity_ratios'])]
-
-            if len(baseline_pol) > 0 and len(current_pol) > 0:
-                bins = np.linspace(
-                    min(baseline_pol.min(), current_pol.min()),
-                    max(baseline_pol.max(), current_pol.max()),
-                    100
-                )
-                baseline_hist, _ = np.histogram(baseline_pol, bins=bins)
-                current_hist, _ = np.histogram(current_pol, bins=bins)
-                result['polarity_ratio_kl'] = calculate_kl_divergence(baseline_hist, current_hist)
-
-        # 5. Non-zero pixel percentage distribution KL divergence
-        if 'nonzero_pixel_percentages' in stats and 'nonzero_pixel_percentages' in baseline_stats:
-            bins = np.linspace(
-                min(baseline_stats['nonzero_pixel_percentages'].min(),
-                    stats['nonzero_pixel_percentages'].min()),
-                max(baseline_stats['nonzero_pixel_percentages'].max(),
-                    stats['nonzero_pixel_percentages'].max()),
-                100
-            )
-            baseline_hist, _ = np.histogram(baseline_stats['nonzero_pixel_percentages'], bins=bins)
-            current_hist, _ = np.histogram(stats['nonzero_pixel_percentages'], bins=bins)
-            result['nonzero_pixel_kl'] = calculate_kl_divergence(baseline_hist, current_hist)
+                if len(data) > 0:
+                    baseline_hist, bins = baseline_histograms[metric]
+                    current_hist, _ = np.histogram(data, bins=bins)
+                    result[key] = calculate_kl_divergence(baseline_hist, current_hist)
 
         kl_results[name] = result
 
@@ -145,72 +118,62 @@ def calculate_histogram_kl_divergences(stats_list: List[Tuple[str, Dict]], basel
 
 def collect_flux_statistics(dataset, n_samples: int, dataset_name: str, representation: Callable) -> Dict:
     """Collect event flux statistics using a tonic representation function."""
+    print(f"Analyzing event flux for {n_samples} {dataset_name} samples...")
 
-    print(f"Analyzing event flux for {n_samples} {dataset_name} samples using {representation.__class__.__name__}...")
-
-    event_densities = []
-    event_counts = []
-    polarity_ratios = []
-    nonzero_pixel_percentages = []
-    spatial_histograms = []
+    # Pre-allocate lists with approximate capacity
+    stats_dict = {
+        'event_densities': [],
+        'event_counts': [],
+        'polarity_ratios': [],
+        'nonzero_pixel_percentages': [],
+        'spatial_histograms': [],
+        'event_durations': []
+    }
 
     dataset_size = len(dataset)
     indices = np.random.choice(dataset_size, size=min(n_samples, dataset_size), replace=False)
 
-    for i in indices:
+    for i in tqdm(indices):
         events, _ = dataset[i]
 
-        if len(events) > 0:
-            # Apply tonic representation to get frames
-            frames = representation(events)
+        if len(events) == 0:
+            continue
 
-            # Calculate event density (events per second)
-            start_time = events['t'][0]
-            end_time = events['t'][-1]
-            total_duration = end_time - start_time
+        # Apply representation
+        frames = representation(events)
 
-            if total_duration > 0:
-                density = len(events) / (total_duration / 1e6)  # events/second
-                event_densities.append(density)
+        # Calculate event density
+        time_span = events['t'][-1] - events['t'][0]
+        if time_span > 0:
+            stats_dict['event_densities'].append(len(events) / (time_span / 1e6))
+            # Store duration in microseconds
+            stats_dict['event_durations'].append(time_span)
 
-            # Analyze each frame
-            if len(frames.shape) == 4:  # (T, C, H, W)
-                for frame_idx in range(frames.shape[0]):
-                    frame = frames[frame_idx]
+        # Process frames in batch where possible
+        if len(frames.shape) == 4:  # (T, C, H, W)
+            # Vectorized frame statistics
+            event_counts = frames.sum(axis=(1, 2, 3))
+            stats_dict['event_counts'].extend(event_counts)
 
-                    # Event count (sum of all values in frame)
-                    event_count = np.sum(frame)
-                    event_counts.append(event_count)
+            if frames.shape[1] == 2:  # Polarity channels
+                pos_events = frames[:, 0].sum(axis=(1, 2)).astype(np.float64)
+                neg_events = frames[:, 1].sum(axis=(1, 2)).astype(np.float64)
+                # Create float array for division output
+                ratios = np.full(pos_events.shape, np.inf, dtype=np.float64)
+                np.divide(pos_events, neg_events, where=neg_events > 0, out=ratios)
+                stats_dict['polarity_ratios'].extend(ratios)
 
-                    # Polarity ratio (assuming 2 channels for pos/neg)
-                    if frame.shape[0] == 2:
-                        pos_events = np.sum(frame[0])
-                        neg_events = np.sum(frame[1])
-                        ratio = pos_events / neg_events if neg_events > 0 else float('inf')
-                        polarity_ratios.append(ratio)
+            # Non-zero pixel percentages
+            combined = frames.sum(axis=1)  # Sum over channels
+            total_pixels = combined.shape[1] * combined.shape[2]
+            nonzero = (combined != 0).sum(axis=(1, 2))
+            percentages = (nonzero / total_pixels) * 100
+            stats_dict['nonzero_pixel_percentages'].extend(percentages)
 
-                    # Non-zero pixel percentage
-                    combined_frame = np.sum(frame, axis=0)
-                    total_pixels = combined_frame.size
-                    nonzero_pixels = np.count_nonzero(combined_frame)
-                    nonzero_percentage = (nonzero_pixels / total_pixels) * 100
-                    nonzero_pixel_percentages.append(nonzero_percentage)
+        # Build spatial histogram using optimized function
+        height, width = frames.shape[-2], frames.shape[-1]
+        spatial_hist = _build_spatial_histogram_fast(events['x'], events['y'], height, width)
+        stats_dict['spatial_histograms'].append(spatial_hist)
 
-            # Create spatial histogram for the entire sample
-            height, width = frames.shape[-2], frames.shape[-1]
-            spatial_hist = np.zeros((height, width))
-
-            for event in events:
-                x, y = event['x'], event['y']
-                if 0 <= x < width and 0 <= y < height:
-                    spatial_hist[y, x] += 1
-
-            spatial_histograms.append(spatial_hist)
-
-    return {
-        'event_densities': np.array(event_densities),
-        'event_counts': np.array(event_counts),
-        'polarity_ratios': np.array(polarity_ratios),
-        'nonzero_pixel_percentages': np.array(nonzero_pixel_percentages),
-        'spatial_histograms': np.array(spatial_histograms)
-    }
+    # Convert to numpy arrays
+    return {k: np.array(v) for k, v in stats_dict.items()}

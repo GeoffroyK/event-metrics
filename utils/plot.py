@@ -71,9 +71,10 @@ def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
     """
 
     fig = make_subplots(
-        rows=2, cols=2,
+        rows=3, cols=2,
         subplot_titles=('Event Density Distribution', 'Event Count Distribution',
-                        'Polarity Ratio Distribution', 'Non-zero Pixel Distribution')
+                        'Polarity Ratio Distribution', 'Non-zero Pixel Distribution',
+                        'Event Duration Distribution', '')
     )
 
     colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
@@ -119,20 +120,34 @@ def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
             row=2, col=2
         )
 
-    # Rest of the function remains the same
+        # 5. Event Duration Distribution
+        if 'event_durations' in stats and len(stats['event_durations']) > 0:
+            # Convert from microseconds to milliseconds for better readability
+            durations_ms = stats['event_durations'] / 1000.0
+            fig.add_trace(
+                go.Histogram(x=durations_ms, name=split_name, opacity=0.8,
+                             histnorm='probability density', nbinsx=50,
+                             marker_color=color, showlegend=False,
+                             legendgroup=split_name),
+                row=3, col=1
+            )
+
+    # Update axis labels
     fig.update_xaxes(title_text='Event Density (events/second)', row=1, col=1)
     fig.update_xaxes(title_text='Number of Events per Window', row=1, col=2)
     fig.update_xaxes(title_text='Polarity Ratio (Positive/Negative)', row=2, col=1)
     fig.update_xaxes(title_text='Non-zero Pixel Percentage', row=2, col=2)
+    fig.update_xaxes(title_text='Event Duration (milliseconds)', row=3, col=1)
 
     fig.update_yaxes(title_text='Density', row=1, col=1)
     fig.update_yaxes(title_text='Density', row=1, col=2)
     fig.update_yaxes(title_text='Density', row=2, col=1)
     fig.update_yaxes(title_text='Density', row=2, col=2)
+    fig.update_yaxes(title_text='Density', row=3, col=1)
 
     fig.update_layout(
         title_text=f'{dataset_name} Event Flux Statistics',
-        height=1200,
+        height=1500,
         width=1500,
         barmode='overlay',
         showlegend=True
@@ -152,6 +167,10 @@ def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
         print(f"  Avg Events/Window: {np.mean(stats['event_counts']):.2f} ± {np.std(stats['event_counts']):.2f}")
         print(
             f"  Avg Non-zero Pixels (%): {np.mean(stats['nonzero_pixel_percentages']):.2f} ± {np.std(stats['nonzero_pixel_percentages']):.2f}")
+        if 'event_durations' in stats and len(stats['event_durations']) > 0:
+            # Convert to milliseconds for readability
+            durations_ms = stats['event_durations'] / 1000.0
+            print(f"  Event Duration (ms): {np.mean(durations_ms):.2f} ± {np.std(durations_ms):.2f}")
 
     # Calculate and display KL divergences
     print("\n" + "=" * 70)
@@ -175,6 +194,8 @@ def plot_flux_statistics(stats_list: List[Tuple[str, Dict]], dataset_name: str):
                 print(f"  Polarity Ratio KL:        {kl_metrics['polarity_ratio_kl']:.6f}")
             if 'nonzero_pixel_kl' in kl_metrics:
                 print(f"  Non-zero Pixel KL:        {kl_metrics['nonzero_pixel_kl']:.6f}")
+            if 'event_duration_kl' in kl_metrics:
+                print(f"  Event Duration KL:        {kl_metrics['event_duration_kl']:.6f}")
 
     # Create bar plot for KL divergences
     plot_kl_divergences(kl_results, dataset_name)
@@ -190,9 +211,9 @@ def plot_kl_divergences(kl_results: Dict, dataset_name: str):
     # Prepare data for plotting
     dataset_names = []
     metrics = ['spatial_histogram_kl', 'event_density_kl', 'event_count_kl',
-               'polarity_ratio_kl', 'nonzero_pixel_kl']
+               'polarity_ratio_kl', 'nonzero_pixel_kl', 'event_duration_kl']
     metric_labels = ['Spatial Histogram', 'Event Density', 'Event Count',
-                     'Polarity Ratio', 'Non-zero Pixels']
+                     'Polarity Ratio', 'Non-zero Pixels', 'Event Duration']
 
     data_by_metric = {metric: [] for metric in metrics}
 
@@ -206,7 +227,7 @@ def plot_kl_divergences(kl_results: Dict, dataset_name: str):
     # Create grouped bar chart
     fig = go.Figure()
 
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
 
     for idx, (metric, label) in enumerate(zip(metrics, metric_labels)):
         fig.add_trace(go.Bar(
